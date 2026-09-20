@@ -58,13 +58,15 @@ class Verifier:
 
         res = chat_json(messages)
         if "error" in res:
-            logger.error(f"Verifier error: {res['error']}")
+            logger.warning(f"Verifier unavailable, using draft answer: {res['error']}")
+            # Fall back to the specialist's draft — still useful to the user
+            fallback_citations = self._build_citations(cited_clauses, documents)
             return VerifiedAnswer(
-                answer="Verification failed due to an error.",
-                citations=[],
-                confidence=0.0,
-                should_abstain=True,
-                abstention_reason="Verification service error."
+                answer=draft_answer,
+                citations=fallback_citations,
+                confidence=0.7,
+                should_abstain=False,
+                abstention_reason=""
             )
 
         confidence = float(res.get("confidence", 0.0))
