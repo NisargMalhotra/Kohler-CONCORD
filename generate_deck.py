@@ -86,7 +86,7 @@ def build_deck():
     pdf.set_font("Helvetica", "B", 12)
     pdf.set_text_color(196, 164, 105)
     pdf.set_xy(20, 155)
-    pdf.cell(257, 10, "[YOUR NAME]  |  PRN: [YOUR PRN]", align="C")
+    pdf.cell(257, 10, "Nisarg Malhotra  |  PRN: 1262243207", align="C")
 
     pdf.set_font("Helvetica", "", 10)
     pdf.set_text_color(140, 140, 160)
