@@ -4,12 +4,14 @@ KOHLER CONCORD — LLM Abstraction Layer.
 Provides a unified interface for LLM calls. Uses the OpenAI client library
 which is compatible with OpenAI, Azure OpenAI, and any OpenAI-compatible API.
 Token usage is tracked for the efficiency/sustainability dashboard.
+Includes automatic retry-with-backoff for rate-limited requests.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 import openai
@@ -20,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 # Global efficiency stats — shared across the application lifetime
 efficiency_stats = EfficiencyStats()
+
+_MAX_RETRIES = 3
+_INITIAL_BACKOFF = 2  # seconds
 
 
 def get_client() -> openai.OpenAI:
@@ -39,6 +44,7 @@ def chat(
 ) -> str:
     """
     Send a chat completion request and return the response text.
+    Automatically retries on rate-limit errors with exponential backoff.
 
     Args:
         messages: List of message dicts with 'role' and 'content' keys.
@@ -62,35 +68,51 @@ def chat(
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 
-    try:
-        response = client.chat.completions.create(**kwargs)
-        result = response.choices[0].message.content or ""
+    for attempt in range(_MAX_RETRIES):
+        try:
+            response = client.chat.completions.create(**kwargs)
+            result = response.choices[0].message.content or ""
 
-        # Track token usage for efficiency dashboard
-        if response.usage:
-            efficiency_stats.total_tokens_used += response.usage.total_tokens
-            if model == settings.LLM_MODEL_SMALL:
-                efficiency_stats.small_model_calls += 1
+            # Track token usage for efficiency dashboard
+            if response.usage:
+                efficiency_stats.total_tokens_used += response.usage.total_tokens
+                if model == settings.LLM_MODEL_SMALL:
+                    efficiency_stats.small_model_calls += 1
+                else:
+                    efficiency_stats.large_model_calls += 1
+
+            return result
+
+        except openai.RateLimitError:
+            wait = _INITIAL_BACKOFF * (2 ** attempt)
+            logger.warning(
+                f"Rate limited (attempt {attempt + 1}/{_MAX_RETRIES}), "
+                f"retrying in {wait}s…"
+            )
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(wait)
             else:
-                efficiency_stats.large_model_calls += 1
+                logger.error("Rate limit exceeded after all retries")
+                return "[Error: Rate limit exceeded. Please wait a moment and retry.]"
 
-        return result
+        except openai.AuthenticationError:
+            logger.error("LLM authentication failed — check LLM_API_KEY in .env")
+            return "[Error: Invalid API key. Please check your LLM_API_KEY in .env]"
+        except openai.APIConnectionError as e:
+            logger.error(f"LLM connection error: {e}")
+            return "[Error: Could not connect to LLM API. Check your network and LLM_BASE_URL.]"
+        except openai.APIError as e:
+            wait = _INITIAL_BACKOFF * (2 ** attempt)
+            logger.warning(f"API error (attempt {attempt + 1}): {e}")
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(wait)
+            else:
+                return f"[LLM API Error: {getattr(e, 'message', str(e))}]"
+        except Exception as e:
+            logger.error(f"LLM unexpected error: {e}")
+            return f"[LLM Error: {str(e)}]"
 
-    except openai.AuthenticationError:
-        logger.error("LLM authentication failed — check LLM_API_KEY in .env")
-        return "[Error: Invalid API key. Please check your LLM_API_KEY in .env]"
-    except openai.RateLimitError:
-        logger.error("LLM rate limit exceeded")
-        return "[Error: Rate limit exceeded. Please wait and retry.]"
-    except openai.APIConnectionError as e:
-        logger.error(f"LLM connection error: {e}")
-        return "[Error: Could not connect to LLM API. Check your network and LLM_BASE_URL.]"
-    except openai.APIError as e:
-        logger.error(f"LLM API error: {e}")
-        return f"[LLM API Error: {getattr(e, 'message', str(e))}]"
-    except Exception as e:
-        logger.error(f"LLM unexpected error: {e}")
-        return f"[LLM Error: {str(e)}]"
+    return "[Error: LLM call failed after retries.]"
 
 
 def chat_json(
