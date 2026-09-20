@@ -2,6 +2,8 @@
 
 **KOHLER CONCORD** is an enterprise-grade conversational AI agent equipped with a **Trust Layer** for answering complex queries across HR, Finance, Customer Support, Privacy, and Legal domains. It was built for the KOHLER-MITWPU AI Research Lab Case Study, Track 3.
 
+[![Watch the Tutorial](https://img.shields.io/badge/▶_Watch-Tutorial_Video-red?style=for-the-badge&logo=youtube)](https://youtu.be/bD0n76-pJVc)
+
 ## Key Innovations (The 5 Trust Layer Features)
 
 1. **Role & Permission-Aware Retrieval:** Persona-based access controls ensure users only retrieve documents they are authorized to see (e.g., Finance Analyst vs. Employee).
