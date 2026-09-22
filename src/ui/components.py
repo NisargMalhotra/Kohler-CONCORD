@@ -30,47 +30,37 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
 # ── public components ─────────────────────────────────────────────────────────
 
 def render_confidence_badge(confidence: float) -> None:
-    """Display a colour-coded confidence indicator as a styled badge."""
+    """Display a colour-coded confidence indicator."""
     if confidence >= 0.7:
-        cls, icon, label = "kc-badge-high", "✓", "High Confidence"
+        st.markdown(f"🟢 **High Confidence** ({confidence:.0%})")
     elif confidence >= 0.4:
-        cls, icon, label = "kc-badge-med", "◐", "Medium Confidence"
+        st.markdown(f"🟡 **Medium Confidence** ({confidence:.0%})")
     else:
-        cls, icon, label = "kc-badge-low", "!", "Low Confidence"
-
-    st.markdown(
-        f'<div class="kc-badge {cls}">{icon}&ensp;{label} ({confidence:.0%})</div>',
-        unsafe_allow_html=True,
-    )
+        st.markdown(f"🔴 **Low Confidence** ({confidence:.0%})")
 
 
 def render_citations(citations: List[Union[Citation, Dict]]) -> None:
-    """Expandable citation list with styled cards."""
+    """Expandable citation list with clause IDs and source text."""
     if not citations:
         return
-    with st.expander(f"📄 Sources ({len(citations)})", expanded=False):
+    with st.expander(f"📄 Citations ({len(citations)})", expanded=False):
         for c in citations:
             clause = _get(c, "clause_id", "?")
             source = _get(c, "source_file", "?")
             text = _get(c, "relevant_text", "")
             domain = _get(c, "domain", "")
             st.markdown(
-                f"""<div class="kc-cite">
-                    <div class="kc-cite-id">📋 {clause}</div>
-                    <div class="kc-cite-meta">{source} · {domain}</div>
-                    <div class="kc-cite-text">"{text}"</div>
-                </div>""",
-                unsafe_allow_html=True,
+                f"**[{clause}]** `{source}` · *{domain}*"
             )
+            st.markdown(f"> {text}")
+            st.markdown("---")
 
 
 def render_conflicts(conflicts: List[Union[Conflict, Dict]]) -> None:
-    """Warning block listing detected policy conflicts as styled cards."""
+    """Warning block listing detected policy conflicts."""
     if not conflicts:
         return
-    st.warning(
-        f"⚠️ **Policy Conflict Radar** — {len(conflicts)} conflict(s) detected"
-    )
+    st.warning(f"⚠️ **Policy Conflict Radar** — {len(conflicts)} conflict(s) detected")
     for c in conflicts:
         a_id = _get(c, "clause_a_id", "?")
         b_id = _get(c, "clause_b_id", "?")
@@ -80,18 +70,13 @@ def render_conflicts(conflicts: List[Union[Conflict, Dict]]) -> None:
         rec = _get(c, "recommendation", "")
         sev = _get(c, "severity", "medium")
 
-        sev_icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(sev, "🟡")
-
+        icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(sev, "🟡")
         st.markdown(
-            f"""<div class="kc-conflict">
-                <div class="kc-conflict-hdr">
-                    {sev_icon} {a_id} ({d_a}) ↔ {b_id} ({d_b})
-                </div>
-                <div class="kc-conflict-desc">{desc}</div>
-                <div class="kc-conflict-rec">💡 <em>Recommendation:</em> {rec}</div>
-            </div>""",
-            unsafe_allow_html=True,
+            f"{icon} **{a_id}** ({d_a}) ↔ **{b_id}** ({d_b})"
         )
+        st.markdown(f"  {desc}")
+        st.markdown(f"  💡 *Recommendation:* {rec}")
+        st.markdown("---")
 
 
 def render_formatted_output(output: Union[FormattedOutput, Dict]) -> None:
@@ -143,13 +128,13 @@ def render_efficiency_stats(stats: EfficiencyStats) -> None:
     """Sidebar sustainability metrics."""
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("⚡ Tokens Used", f"{stats.total_tokens_used:,}")
-        st.metric("💾 Cache Hits", stats.cache_hits)
-        st.metric("🤖 Small Model", stats.small_model_calls)
+        st.metric("Tokens Used", f"{stats.total_tokens_used:,}")
+        st.metric("Cache Hits", stats.cache_hits)
+        st.metric("Small Model Calls", stats.small_model_calls)
     with col2:
-        st.metric("♻️ Tokens Saved", f"{stats.total_tokens_saved:,}")
-        st.metric("🔋 Energy Saved", f"{stats.estimated_energy_saved_wh:.4f} Wh")
-        st.metric("🌍 CO₂ Saved", f"{stats.estimated_co2_saved_g:.4f} g")
+        st.metric("Tokens Saved", f"{stats.total_tokens_saved:,}")
+        st.metric("Energy Saved", f"{stats.estimated_energy_saved_wh:.4f} Wh")
+        st.metric("CO₂ Saved", f"{stats.estimated_co2_saved_g:.4f} g")
 
 
 def render_denial_messages(messages: List[str]) -> None:

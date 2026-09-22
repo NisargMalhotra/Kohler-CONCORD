@@ -29,20 +29,11 @@ from src.ui.components import (
 )
 from src.ui.dashboard import render_eval_dashboard
 from src.ui.feedback import log_feedback
-from src.ui.theme import inject_custom_css, inject_login_css, render_header
 from eval.runner import EvalRunner
-from PIL import Image
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
-_FAVICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "favicon.jpg")
-_favicon = Image.open(_FAVICON_PATH) if os.path.isfile(_FAVICON_PATH) else "🏛️"
-
-st.set_page_config(
-    page_title="KOHLER CONCORD",
-    page_icon=_favicon,
-    layout="wide",
-)
+st.set_page_config(page_title="KOHLER CONCORD", page_icon="🏛️", layout="wide")
 
 
 # ── Session state initialisation ──────────────────────────────────────────────
@@ -78,77 +69,64 @@ def render_login() -> None:
     Full-screen login page.  Blocks the rest of the app until the user
     authenticates.  Customer role skips the password step.
     """
-    inject_login_css()
 
     # Centre the login card using columns
-    _pad_l, col, _pad_r = st.columns([1.3, 2, 1.3])
+    _pad_l, col, _pad_r = st.columns([1, 2, 1])
 
     with col:
         st.markdown("")
         st.markdown("")
-
-        # ── Styled logo ──
-        import base64
-
-        logo_html = ""
-        if os.path.isfile(_FAVICON_PATH):
-            with open(_FAVICON_PATH, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode()
-            logo_html = (
-                f'<img src="data:image/jpeg;base64,{b64}" '
-                f'style="width:72px;height:72px;border-radius:16px;margin-bottom:12px;">'
-            )
-
         st.markdown(
-            f"""
-            <div class="kc-login-logo">{logo_html}</div>
-            <div class="kc-login-title">KOHLER CONCORD</div>
-            <div class="kc-login-sub">Unified Enterprise AI Agent with Trust Layer</div>
-            """,
+            "<h1 style='text-align:center;'>🏛️ KOHLER CONCORD</h1>",
             unsafe_allow_html=True,
         )
+        st.markdown(
+            "<p style='text-align:center; opacity:0.7;'>"
+            "Unified Enterprise AI Agent with Trust Layer</p>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("")
 
-        # ── Form card ──
-        with st.container(border=True):
-            # Role selector — pull list dynamically from config
-            persona_options = list(PERSONA_DISPLAY_NAMES.values())
-            selected_display = st.selectbox(
-                "Select your role", persona_options, key="login_role_select"
-            )
+        st.divider()
 
-            # Resolve back to Persona enum
-            selected_persona: Persona = Persona.EMPLOYEE
-            for p, name in PERSONA_DISPLAY_NAMES.items():
-                if name == selected_display:
-                    selected_persona = p
-                    break
+        # Role selector — pull list dynamically from config
+        persona_options = list(PERSONA_DISPLAY_NAMES.values())
+        selected_display = st.selectbox(
+            "Select your role", persona_options, key="login_role_select"
+        )
 
-            is_customer = selected_persona == Persona.CUSTOMER
+        # Resolve back to Persona enum
+        selected_persona: Persona = Persona.EMPLOYEE
+        for p, name in PERSONA_DISPLAY_NAMES.items():
+            if name == selected_display:
+                selected_persona = p
+                break
 
-            if is_customer:
-                # No password needed for customers
-                st.info("👋 Customers can continue without a password.")
-                if st.button(
-                    "Continue as Customer",
-                    use_container_width=True,
-                    type="primary",
-                ):
+        is_customer = selected_persona == Persona.CUSTOMER
+
+        if is_customer:
+            # No password needed for customers
+            st.info("👋 Customers can continue without a password.")
+            if st.button(
+                "Continue as Customer", use_container_width=True, type="primary"
+            ):
+                st.session_state.authenticated = True
+                st.session_state.active_persona = selected_persona
+                st.rerun()
+        else:
+            # Password required for internal roles
+            password = st.text_input("Password", type="password", key="login_pw")
+
+            if st.button("Log In", use_container_width=True, type="primary"):
+                expected = _get_app_password()
+                if password == expected:
                     st.session_state.authenticated = True
                     st.session_state.active_persona = selected_persona
                     st.rerun()
-            else:
-                # Password required for internal roles
-                password = st.text_input("Password", type="password", key="login_pw")
+                else:
+                    st.error("❌ Incorrect password. Please try again.")
 
-                if st.button("Log In", use_container_width=True, type="primary"):
-                    expected = _get_app_password()
-                    if password == expected:
-                        st.session_state.authenticated = True
-                        st.session_state.active_persona = selected_persona
-                        st.rerun()
-                    else:
-                        st.error("❌ Incorrect password. Please try again.")
-
+        st.divider()
         st.caption(
             "Internal roles require the shared enterprise password.  "
             "If you don't have it, contact your administrator."
@@ -160,9 +138,7 @@ def render_login() -> None:
 
 def initialize_kb() -> None:
     """Load, chunk, and index the synthetic knowledge base."""
-    with st.spinner(
-        "Loading knowledge base (first run downloads embedding model ~90 MB)…"
-    ):
+    with st.spinner("Loading knowledge base (first run downloads embedding model ~90 MB)…"):
         loader = KnowledgeBaseLoader()
         raw_docs = loader.load_all()
         if not raw_docs:
@@ -229,14 +205,9 @@ def _stream_text(text: str):
 def _render_assistant_extras(result: dict) -> None:
     """Renders badges, citations, conflicts, and formatted outputs."""
     if result.get("is_injection"):
-        st.error(
-            "🛡️ **Security Alert:** Potential prompt injection detected and blocked."
-        )
+        st.error("🛡️ **Security Alert:** Potential prompt injection detected and blocked.")
     if result.get("should_abstain"):
-        st.info(
-            f"ℹ️ **Insufficient Evidence:** "
-            f"{result.get('abstention_reason', 'Not enough supporting documents.')}"
-        )
+        st.info(f"ℹ️ **Insufficient Evidence:** {result.get('abstention_reason', 'Not enough supporting documents.')}")
     if "confidence" in result:
         render_confidence_badge(result.get("confidence", 0.0))
     if result.get("denied_domains"):
@@ -273,10 +244,7 @@ def _render_feedback(msg_index: int, result: dict) -> None:
         question = result.get("_question", "")
         answer = result.get("content", result.get("answer", ""))
         confidence = result.get("confidence", 0.0)
-        cited = [
-            c.get("clause_id", "") if isinstance(c, dict) else ""
-            for c in result.get("citations", [])
-        ]
+        cited = [c.get("clause_id", "") if isinstance(c, dict) else "" for c in result.get("citations", [])]
         domains = result.get("domains_used", [])
 
         # For thumbs down, show comment box
@@ -321,48 +289,26 @@ def main() -> None:
         render_login()
         st.stop()  # Nothing below runs until login succeeds
 
-    # ── Inject theme CSS ──────────────────────────────────────────
-    inject_custom_css()
-
     # The persona is locked to whatever was chosen at login
     selected_persona: Persona = st.session_state.active_persona
-    display_name = PERSONA_DISPLAY_NAMES.get(
-        selected_persona, str(selected_persona)
-    )
-
-    # ── Header bar ────────────────────────────────────────────────
-    render_header(display_name, _FAVICON_PATH)
 
     # ── Sidebar ───────────────────────────────────────────────────────
     with st.sidebar:
-        st.markdown(
-            """
-            <div style="text-align:center; padding:8px 0 4px;">
-                <span style="color:#C4A469; font-size:22px; font-weight:700;
-                             letter-spacing:0.5px;">◆ KOHLER CONCORD</span><br>
-                <span style="color:rgba(255,255,255,0.4); font-size:11px;
-                             letter-spacing:1px;">ENTERPRISE AI AGENT</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        st.markdown("# 🏛️ KOHLER CONCORD")
+        st.caption("Unified Enterprise AI Agent with Trust Layer")
         st.divider()
 
-        # ── User section ──
-        st.markdown(
-            '<p class="kc-section">👤 &nbsp;User</p>', unsafe_allow_html=True
-        )
-        st.markdown(f"**{display_name}**")
-        if st.button("🚪 Logout", use_container_width=True):
+        # Show logged-in role (read-only)
+        display_name = PERSONA_DISPLAY_NAMES.get(selected_persona, str(selected_persona))
+        st.markdown(f"**Logged in as:** {display_name}")
+
+        # Logout button
+        if st.button("🔓 Logout", use_container_width=True):
             _do_logout()
 
         st.divider()
 
-        # ── Output format section ──
-        st.markdown(
-            '<p class="kc-section">📝 &nbsp;Output Format</p>',
-            unsafe_allow_html=True,
-        )
+        # Format selector
         format_options = list(FORMAT_MAP.keys())
         selected_format = st.selectbox("Output Format", format_options)
         custom_fmt = st.text_input(
@@ -372,22 +318,18 @@ def main() -> None:
 
         st.divider()
 
-        # ── Tools section ──
-        st.markdown(
-            '<p class="kc-section">🛠️ &nbsp;Tools</p>', unsafe_allow_html=True
-        )
-        if st.button("📚 Initialise Knowledge Base", use_container_width=True):
+        # KB init button
+        if st.button("🔄 Initialise Knowledge Base", use_container_width=True):
             initialize_kb()
+
+        # Eval button
         if st.button("🧪 Run Evaluation Suite", use_container_width=True):
             run_evaluation()
 
         st.divider()
 
-        # ── Sustainability section ──
-        st.markdown(
-            '<p class="kc-section">🌱 &nbsp;Sustainability</p>',
-            unsafe_allow_html=True,
-        )
+        # Efficiency / sustainability counter
+        st.markdown("### 🌱 Sustainability")
         render_efficiency_stats(efficiency_stats)
 
     # ── Main area tabs ──────────────────────────────────────────────────
@@ -435,9 +377,7 @@ def main() -> None:
                     has_structured_format = bool(fmt_instr.strip())
 
                     # ── Pipeline with live status ─────────────────────
-                    with st.status(
-                        "🧠 Processing your question…", expanded=True
-                    ) as status:
+                    with st.status("🧠 Processing your question…", expanded=True) as status:
                         status.update(label="📡 Routing question…")
                         result = run_agent_pipeline(
                             query=user_input,
@@ -446,11 +386,7 @@ def main() -> None:
                             vector_store=st.session_state.vector_store,
                             conversation_history=st.session_state.messages,
                         )
-                        status.update(
-                            label="✅ Complete",
-                            state="complete",
-                            expanded=False,
-                        )
+                        status.update(label="✅ Complete", state="complete", expanded=False)
 
                     answer_text = result.get("answer", "")
 
@@ -496,7 +432,7 @@ def main() -> None:
         if st.session_state.get("kb_initialized"):
             store = st.session_state.vector_store
             stats = store.get_collection_stats()
-            st.metric("📚 Indexed Chunks", stats.get("count", 0))
+            st.metric("Indexed Chunks", stats.get("count", 0))
 
             search_q = st.text_input("🔍 Search the Knowledge Base")
             if search_q:
