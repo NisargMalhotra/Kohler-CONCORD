@@ -29,6 +29,8 @@ from src.ui.components import (
 )
 from src.ui.dashboard import render_eval_dashboard
 from src.ui.feedback import log_feedback
+from src.ui.customer_ui import render_customer_experience
+from src.knowledge_base.customer_store import CustomerVectorStore
 from eval.runner import EvalRunner
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -54,6 +56,8 @@ def init_session() -> None:
         st.session_state.active_persona = None
     if "feedback_given" not in st.session_state:
         st.session_state.feedback_given = {}  # msg_index -> rating
+    if "customer_store" not in st.session_state:
+        st.session_state.customer_store = None
 
 
 # ── Login page ────────────────────────────────────────────────────────────────
@@ -291,6 +295,23 @@ def main() -> None:
 
     # The persona is locked to whatever was chosen at login
     selected_persona: Persona = st.session_state.active_persona
+
+    # ── Customer gets a completely separate experience ──────────────
+    if selected_persona == Persona.CUSTOMER:
+        # Load the pre-built customer vector index (built once via
+        # scripts/build_customer_index.py, loaded from disk every startup).
+        if st.session_state.customer_store is None:
+            cstore = CustomerVectorStore()
+            if cstore.is_ready():
+                st.session_state.customer_store = cstore
+            else:
+                st.warning(
+                    "⚠️ Customer knowledge base not built yet. "
+                    "Run `python scripts/build_customer_index.py` first."
+                )
+                st.stop()
+        render_customer_experience(st.session_state.customer_store)
+        st.stop()  # Nothing below runs for customers
 
     # ── Sidebar ───────────────────────────────────────────────────────
     with st.sidebar:

@@ -13,6 +13,8 @@ venv/
 
 # ChromaDB
 chroma_db/
+chroma_customer_db/
+.customer_kb_hash
 
 # Feedback data (keep sample but ignore real logs)
 feedback/feedback_log.jsonl

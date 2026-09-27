@@ -54,9 +54,14 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your LLM API key
 
+# Build the Customer Knowledge Base index (one-time step)
+python scripts/build_customer_index.py
+
 # Run the app
 streamlit run app.py
 ```
+
+> **Note:** The customer KB index only needs to be rebuilt if you change files in `data/customer_kb/`. The build script detects changes automatically — run it again and it will skip if nothing changed. Use `--force` to force a rebuild.
 
 ## Login & Authentication
 
@@ -72,6 +77,28 @@ To change the password, edit your `.env` file:
 ```
 APP_PASSWORD=your-new-password
 ```
+
+## Customer Experience (Isolated)
+
+When a user logs in as **Customer**, they get a completely separate interface from the internal enterprise chat:
+
+- **🛠️ Get Help:** A complaint-resolution chatbot with quick-start suggestion cards (e.g., "My faucet is leaking," "Check my warranty"). The agent tries to resolve issues conversationally, and when it can't, it clearly suggests contacting Kohler Support at 1-800-4-KOHLER.
+- **📦 Products & Info:** A product information specialist for browsing specifications, features, warranty details, and installation guides.
+
+### Separate Knowledge Base
+
+The customer's knowledge base lives in `data/customer_kb/` — **physically separate** from the internal documents in `data/knowledge_base/`. This means:
+- No HR, Finance, or Legal documents are ever accessible to the customer pipeline
+- The customer vector index is stored in `chroma_customer_db/` (separate from the internal `chroma_db/`)
+- The index is **pre-built once** via `python scripts/build_customer_index.py` and loaded from disk on every app start
+
+### Customer KB Files
+| File | Contents |
+| --- | --- |
+| `products_catalog.md` | Faucets, toilets, showers, generators, smart home, water conservation |
+| `warranty_returns.md` | Warranty terms, returns policy, product registration |
+| `troubleshooting.md` | Faucet, toilet, smart fixture, and generator troubleshooting |
+| `support_faq.md` | Contact info, shipping, installation, parts, privacy, payments |
 
 ## Testing & Evaluation
 
@@ -96,11 +123,26 @@ kohler-concord/
 ├── src/
 │   ├── config.py
 │   ├── llm.py
-│   ├── ...
+│   ├── agents/
+│   │   ├── pipeline.py              # Internal enterprise pipeline
+│   │   └── customer_pipeline.py     # Customer-isolated pipeline
+│   ├── knowledge_base/
+│   │   ├── customer_store.py        # Customer-specific vector store
+│   │   └── ...
+│   └── ui/
+│       ├── customer_ui.py           # Customer experience UI
+│       └── ...
+├── scripts/
+│   └── build_customer_index.py      # One-time customer KB builder
 ├── eval/
 ├── tests/
 ├── data/
-│   └── knowledge_base/
+│   ├── knowledge_base/              # Internal enterprise docs
+│   └── customer_kb/                 # Customer-facing docs (isolated)
+│       ├── products_catalog.md
+│       ├── warranty_returns.md
+│       ├── troubleshooting.md
+│       └── support_faq.md
 ├── README.md
 ├── PROMPTS.md
 ├── run.bat
