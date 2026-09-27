@@ -83,15 +83,57 @@ class DomainSpecialist:
 
         result = chat_json(messages)
         if "error" in result:
-            logger.error(f"Specialist error for {domain}: {result['error']}")
-            return {
-                "answer": "An error occurred while generating the answer.",
-                "cited_clauses": [],
-                "key_points": []
-            }
+            logger.warning(f"Specialist LLM unavailable for {domain}: {result['error']}")
+            # Fallback: build an answer directly from the top retrieved documents
+            # so the user still gets useful information even when the API is down
+            return self._build_fallback_answer(query, documents, domain)
 
         return {
             "answer": result.get("answer", "No answer could be generated."),
             "cited_clauses": result.get("cited_clauses", []),
             "key_points": result.get("key_points", [])
+        }
+
+    def _build_fallback_answer(
+        self, query: str, documents: List[Document], domain: str
+    ) -> Dict[str, Any]:
+        """Build an answer directly from retrieved document chunks (no LLM).
+
+        Used when the LLM API is unavailable (rate-limited). Returns the
+        top-3 most relevant document sections verbatim with clause citations.
+        """
+        if not documents:
+            return {
+                "answer": (
+                    "The AI assistant is temporarily unavailable due to API limits. "
+                    "Please try again in a few moments."
+                ),
+                "cited_clauses": [],
+                "key_points": [],
+            }
+
+        # Take the top 3 documents (already ranked by relevance from retrieval)
+        top_docs = documents[:3]
+        cited_clauses = []
+        sections = []
+
+        for doc in top_docs:
+            cid = doc.metadata.get("clause_id", "unknown")
+            title = doc.metadata.get("title", "")
+            cited_clauses.append(cid)
+            header = f"**{title}** (Clause {cid}):" if title else f"**Clause {cid}:**"
+            # Trim to keep the answer reasonable
+            content = doc.content[:500] + ("…" if len(doc.content) > 500 else "")
+            sections.append(f"{header}\n{content}")
+
+        answer = (
+            f"*Based on {domain} documents (AI summarisation temporarily unavailable due to API limits):*\n\n"
+            + "\n\n".join(sections)
+            + "\n\n---\n*For a fully synthesised answer, please try again in a few moments.*"
+        )
+
+        return {
+            "answer": answer,
+            "cited_clauses": cited_clauses,
+            "key_points": [f"Source: {domain} knowledge base"],
         }
