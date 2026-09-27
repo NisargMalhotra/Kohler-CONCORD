@@ -28,13 +28,35 @@ class InjectionDetector:
         r"(?i)override permissions"
     ]
 
+    # Suspicious-but-not-regex patterns that warrant an LLM check
+    _BORDERLINE_PATTERNS = [
+        r"(?i)forget", r"(?i)new role", r"(?i)bypass", r"(?i)jailbreak",
+        r"(?i)do not follow", r"(?i)instead of", r"(?i)secret",
+        r"(?i)confidential", r"(?i)all records", r"(?i)dump",
+    ]
+
     def check(self, query: str) -> Tuple[bool, str]:
         """Check if query contains injection attempts."""
         is_safe, reason = self._regex_check(query)
         if not is_safe:
             return False, reason
-            
-        return self._llm_check(query)
+
+        # Only run the expensive LLM check if the query looks borderline
+        # suspicious. Normal questions skip this to save API budget.
+        if self._needs_llm_check(query):
+            return self._llm_check(query)
+        return True, ""
+
+    def _needs_llm_check(self, query: str) -> bool:
+        """Decide if the query is suspicious enough to warrant an LLM call."""
+        # Very long queries may be injection attempts
+        if len(query) > 200:
+            return True
+        # Check for borderline patterns
+        for pattern in self._BORDERLINE_PATTERNS:
+            if re.search(pattern, query):
+                return True
+        return False
 
     def _regex_check(self, query: str) -> Tuple[bool, str]:
         """Fast regex-based checking."""
