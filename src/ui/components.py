@@ -97,7 +97,8 @@ def render_formatted_output(output: Union[FormattedOutput, Dict]) -> None:
             st.caption(f"  • {err}")
 
     # Unique key to avoid StreamlitDuplicateElementId on history replay
-    _uid = str(hash((fmt_type, str(content)[:100], str(file_path))))
+    import uuid
+    _uid = uuid.uuid4().hex[:12]
 
     # Content display
     if fmt_type in ("json", "xml"):
