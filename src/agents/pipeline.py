@@ -9,6 +9,7 @@ Orchestrates the full multi-agent pipeline:
 
 import logging
 import re
+import time
 from typing import Any, Dict, List, Optional
 
 from src.config import Persona, FormatSpec, settings
@@ -132,6 +133,7 @@ def run_agent_pipeline(
         should_abstain, abstention_reason.
     """
     history = conversation_history or []
+    start_time = time.time()
     history_block = _build_history_block(history)
 
     # ── 0. Cache check ────────────────────────────────────────────────
@@ -240,7 +242,7 @@ def run_agent_pipeline(
 
     # ── 5. Verify and cite ────────────────────────────────────────────
     verifier = Verifier()
-    verified = verifier.verify(
+    verified, verification_level = verifier.verify(
         query, combined_draft, documents, list(set(all_cited)),
         is_follow_up=bool(history_block and _is_follow_up(query)),
     )
@@ -271,6 +273,10 @@ def run_agent_pipeline(
             logger.error(f"Formatting error: {e}")
 
     # ── 9. Build result dict ──────────────────────────────────────────
+    elapsed_ms = (time.time() - start_time) * 1000
+    efficiency_stats.total_response_time_ms += elapsed_ms
+    efficiency_stats.total_responses += 1
+
     result: Dict[str, Any] = {
         "answer": verified.answer,
         "citations": [
@@ -309,6 +315,7 @@ def run_agent_pipeline(
             if format_output
             else None
         ),
+        "verification_level": verification_level,
         "denied_domains": denied_domains,
         "should_abstain": verified.should_abstain,
         "abstention_reason": verified.abstention_reason,
@@ -344,6 +351,7 @@ def _empty_result(
         "confidence": 0.0,
         "conflicts": [],
         "format_output": None,
+        "verification_level": "n/a",
         "denied_domains": denied_domains or [],
         "should_abstain": False,
         "abstention_reason": None,

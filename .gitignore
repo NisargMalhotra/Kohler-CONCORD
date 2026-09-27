@@ -30,5 +30,6 @@ feedback/feedback_log.jsonl
 .DS_Store
 Thumbs.db
 
-# Output
-output/
+# Output (generated files, not source code)
+/output/
+eval/last_results.json

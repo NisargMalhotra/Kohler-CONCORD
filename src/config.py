@@ -19,14 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Enums
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
 class Persona(str, Enum):
-    """User roles with different document access permissions."""
-
     EMPLOYEE = "employee"
     HR_MANAGER = "hr_manager"
     FINANCE_ANALYST = "finance_analyst"
@@ -35,18 +28,12 @@ class Persona(str, Enum):
 
 
 class Domain(str, Enum):
-    """Knowledge base document domains."""
-
     HR = "hr"
     FINANCE = "finance"
     CUSTOMER_SUPPORT = "customer_support"
     PRIVACY = "privacy"
     LEGAL = "legal"
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Permission Mappings
-# ═══════════════════════════════════════════════════════════════════════════════
 
 PERSONA_DOMAIN_ACCESS: Dict[Persona, List[Domain]] = {
     Persona.EMPLOYEE: [Domain.HR, Domain.CUSTOMER_SUPPORT],
@@ -85,31 +72,15 @@ PERSONA_DISPLAY_NAMES: Dict[Persona, str] = {
 }
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Data Classes
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
 @dataclass
 class Document:
-    """A retrieved document chunk with metadata."""
-
     content: str
     metadata: Dict[str, Any]
-    # Expected metadata keys:
-    #   domain: str (Domain value)
-    #   access_level: str ("public", "internal", "hr_confidential", etc.)
-    #   clause_id: str (e.g., "HR-POL-003.2")
-    #   source_file: str (e.g., "hr_policy.md")
-    #   title: str (section title)
-    #   chunk_id: str (unique identifier for this chunk)
     score: float = 0.0
 
 
 @dataclass
 class Conflict:
-    """A detected conflict between two policy clauses."""
-
     clause_a_id: str
     clause_b_id: str
     domain_a: str
@@ -118,13 +89,11 @@ class Conflict:
     text_b: str
     description: str
     recommendation: str
-    severity: str = "medium"  # "low", "medium", "high"
+    severity: str = "medium"
 
 
 @dataclass
 class Citation:
-    """A citation linking a claim to a specific source text passage."""
-
     clause_id: str
     source_file: str
     relevant_text: str
@@ -133,11 +102,9 @@ class Citation:
 
 @dataclass
 class VerifiedAnswer:
-    """Output of the Verifier agent — answer with citations and confidence."""
-
     answer: str
     citations: List[Citation]
-    confidence: float  # 0.0 to 1.0
+    confidence: float
     should_abstain: bool
     abstention_reason: Optional[str] = None
     conflicts: List[Conflict] = field(default_factory=list)
@@ -146,9 +113,7 @@ class VerifiedAnswer:
 
 @dataclass
 class FormatSpec:
-    """Desired output format specification parsed from user instructions."""
-
-    format_type: str  # "json", "xml", "excel", "email", "plain"
+    format_type: str
     schema: Optional[Dict[str, Any]] = None
     instructions: Optional[str] = None
     email_to: Optional[str] = None
@@ -158,8 +123,6 @@ class FormatSpec:
 
 @dataclass
 class FormattedOutput:
-    """Result of formatting an answer into the requested output contract."""
-
     content: str
     format_type: str
     validation_passed: bool
@@ -170,8 +133,6 @@ class FormattedOutput:
 
 @dataclass
 class EvalResult:
-    """Result of evaluating a single test case."""
-
     question_id: str
     question: str
     persona: str
@@ -185,8 +146,6 @@ class EvalResult:
 
 @dataclass
 class EfficiencyStats:
-    """Tracks token usage and energy savings for the sustainability counter."""
-
     total_tokens_used: int = 0
     tokens_saved_by_cache: int = 0
     tokens_saved_by_routing: int = 0
@@ -194,6 +153,10 @@ class EfficiencyStats:
     cache_misses: int = 0
     small_model_calls: int = 0
     large_model_calls: int = 0
+    semantic_cache_hits: int = 0
+    degraded_responses: int = 0  # verifier fallback count
+    total_response_time_ms: float = 0.0
+    total_responses: int = 0
 
     @property
     def total_tokens_saved(self) -> int:
@@ -201,23 +164,20 @@ class EfficiencyStats:
 
     @property
     def estimated_energy_saved_wh(self) -> float:
-        """Rough estimate: ~0.001 Wh per 1000 tokens for cloud LLM inference."""
         return self.total_tokens_saved * 0.000001
 
     @property
     def estimated_co2_saved_g(self) -> float:
-        """Rough estimate based on average US grid carbon intensity (~0.4 kg CO2/kWh)."""
         return self.estimated_energy_saved_wh * 0.4
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Application Settings
-# ═══════════════════════════════════════════════════════════════════════════════
+    @property
+    def avg_response_time_ms(self) -> float:
+        if self.total_responses == 0:
+            return 0.0
+        return self.total_response_time_ms / self.total_responses
 
 
 class Settings:
-    """Application settings loaded from environment variables."""
-
     LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
     LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
     LLM_MODEL_SMALL: str = os.getenv("LLM_MODEL_SMALL", "gpt-4o-mini")
@@ -228,6 +188,12 @@ class Settings:
     DATA_DIR: str = os.getenv("DATA_DIR", "./data/knowledge_base")
     CACHE_TTL: int = int(os.getenv("CACHE_TTL", "3600"))
     OUTPUT_DIR: str = os.getenv("OUTPUT_DIR", "./output")
+    SEMANTIC_CACHE_THRESHOLD: float = float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.92"))
+    LLM_MAX_RETRIES: int = int(os.getenv("LLM_MAX_RETRIES", "3"))
+    LLM_INITIAL_BACKOFF: float = float(os.getenv("LLM_INITIAL_BACKOFF", "2.0"))
+    EVAL_DELAY_SECONDS: float = float(os.getenv("EVAL_DELAY_SECONDS", "2.0"))
+    EVAL_BATCH_SIZE: int = int(os.getenv("EVAL_BATCH_SIZE", "5"))
+    EVAL_BATCH_PAUSE: float = float(os.getenv("EVAL_BATCH_PAUSE", "5.0"))
 
 
 settings = Settings()

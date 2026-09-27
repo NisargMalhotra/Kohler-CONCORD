@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import time
 from typing import Any, Dict, List, Optional
 
@@ -20,15 +21,10 @@ from src.config import EfficiencyStats, settings
 
 logger = logging.getLogger(__name__)
 
-# Global efficiency stats — shared across the application lifetime
 efficiency_stats = EfficiencyStats()
-
-_MAX_RETRIES = 3
-_INITIAL_BACKOFF = 2  # seconds
 
 
 def get_client() -> openai.OpenAI:
-    """Create an OpenAI-compatible client configured from settings."""
     kwargs: Dict[str, Any] = {"api_key": settings.LLM_API_KEY or "dummy-key"}
     if settings.LLM_BASE_URL:
         kwargs["base_url"] = settings.LLM_BASE_URL
@@ -42,20 +38,6 @@ def chat(
     json_mode: bool = False,
     max_tokens: int = 4096,
 ) -> str:
-    """
-    Send a chat completion request and return the response text.
-    Automatically retries on rate-limit errors with exponential backoff.
-
-    Args:
-        messages: List of message dicts with 'role' and 'content' keys.
-        model: Model name override (defaults to settings.LLM_MODEL).
-        temperature: Sampling temperature (lower = more deterministic).
-        json_mode: If True, request JSON response format from the API.
-        max_tokens: Maximum tokens in the response.
-
-    Returns:
-        The assistant's response text, or a bracketed error message string.
-    """
     client = get_client()
     model = model or settings.LLM_MODEL
 
@@ -68,12 +50,11 @@ def chat(
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 
-    for attempt in range(_MAX_RETRIES):
+    for attempt in range(settings.LLM_MAX_RETRIES):
         try:
             response = client.chat.completions.create(**kwargs)
             result = response.choices[0].message.content or ""
 
-            # Track token usage for efficiency dashboard
             if response.usage:
                 efficiency_stats.total_tokens_used += response.usage.total_tokens
                 if model == settings.LLM_MODEL_SMALL:
@@ -83,13 +64,26 @@ def chat(
 
             return result
 
-        except openai.RateLimitError:
-            wait = _INITIAL_BACKOFF * (2 ** attempt)
+        except openai.RateLimitError as e:
+            wait = None
+            if hasattr(e, "response") and e.response is not None:
+                retry_after = e.response.headers.get("retry-after")
+                if retry_after is not None:
+                    try:
+                        wait = float(retry_after)
+                    except ValueError:
+                        pass
+            
+            if wait is None:
+                wait = settings.LLM_INITIAL_BACKOFF * (2 ** attempt) + random.uniform(0, 1.0)
+            else:
+                wait += random.uniform(0, 1.0)
+                
             logger.warning(
-                f"Rate limited (attempt {attempt + 1}/{_MAX_RETRIES}), "
-                f"retrying in {wait}s…"
+                f"Rate limited (attempt {attempt + 1}/{settings.LLM_MAX_RETRIES}), "
+                f"retrying in {wait:.2f}s…"
             )
-            if attempt < _MAX_RETRIES - 1:
+            if attempt < settings.LLM_MAX_RETRIES - 1:
                 time.sleep(wait)
             else:
                 logger.error("Rate limit exceeded after all retries")
@@ -98,19 +92,19 @@ def chat(
         except openai.AuthenticationError:
             logger.error("LLM authentication failed — check LLM_API_KEY in .env")
             return "[Error: Invalid API key. Please check your LLM_API_KEY in .env]"
-        except openai.APIConnectionError as e:
-            logger.error(f"LLM connection error: {e}")
+        except openai.APIConnectionError as err:
+            logger.error(f"LLM connection error: {err}")
             return "[Error: Could not connect to LLM API. Check your network and LLM_BASE_URL.]"
-        except openai.APIError as e:
-            wait = _INITIAL_BACKOFF * (2 ** attempt)
-            logger.warning(f"API error (attempt {attempt + 1}): {e}")
-            if attempt < _MAX_RETRIES - 1:
+        except openai.APIError as err:
+            wait = settings.LLM_INITIAL_BACKOFF * (2 ** attempt) + random.uniform(0, 1.0)
+            logger.warning(f"API error (attempt {attempt + 1}): {err}")
+            if attempt < settings.LLM_MAX_RETRIES - 1:
                 time.sleep(wait)
             else:
-                return f"[LLM API Error: {getattr(e, 'message', str(e))}]"
-        except Exception as e:
-            logger.error(f"LLM unexpected error: {e}")
-            return f"[LLM Error: {str(e)}]"
+                return f"[LLM API Error: {getattr(err, 'message', str(err))}]"
+        except Exception as err:
+            logger.error(f"LLM unexpected error: {err}")
+            return f"[LLM Error: {str(err)}]"
 
     return "[Error: LLM call failed after retries.]"
 
@@ -120,33 +114,16 @@ def chat_json(
     model: Optional[str] = None,
     temperature: float = 0.1,
 ) -> Dict[str, Any]:
-    """
-    Chat completion that parses the response as JSON.
-
-    Falls back to extracting JSON from markdown code blocks if the raw
-    response is not valid JSON. Returns a dict with 'error' key on failure.
-
-    Args:
-        messages: List of message dicts.
-        model: Optional model name override.
-        temperature: Sampling temperature.
-
-    Returns:
-        Parsed JSON dict, or {"error": "..."} on failure.
-    """
     result = chat(messages, model=model, temperature=temperature, json_mode=True)
 
-    # Propagate LLM errors
     if result.startswith("[Error:") or result.startswith("[LLM"):
         return {"error": result}
 
-    # Try direct parse first
     try:
         return json.loads(result)
     except json.JSONDecodeError:
         pass
 
-    # Try extracting from markdown code fences
     for prefix in ("```json", "```"):
         if prefix in result:
             try:

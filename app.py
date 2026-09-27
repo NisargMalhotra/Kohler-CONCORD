@@ -31,7 +31,7 @@ from src.ui.dashboard import render_eval_dashboard
 from src.ui.feedback import log_feedback
 from src.ui.customer_ui import render_customer_experience
 from src.knowledge_base.customer_store import CustomerVectorStore
-from eval.runner import EvalRunner
+from eval.runner import EvalRunner, load_saved_results
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
@@ -212,6 +212,16 @@ def _render_assistant_extras(result: dict) -> None:
         st.error("🛡️ **Security Alert:** Potential prompt injection detected and blocked.")
     if result.get("should_abstain"):
         st.info(f"ℹ️ **Insufficient Evidence:** {result.get('abstention_reason', 'Not enough supporting documents.')}")
+
+    # Verification level badge
+    vlevel = result.get("verification_level", "full")
+    if vlevel == "unverified":
+        st.warning("⚠️ **Unverified** — API limit reached. This answer has not been verified by the Trust Layer.")
+    elif vlevel == "rule_based":
+        st.warning("🟡 **Rule-Verified** — LLM verifier unavailable; verified by citation-matching rules only.")
+    elif vlevel == "small_model":
+        st.caption("ℹ️ Verified using lightweight model (primary verifier was rate-limited).")
+
     if "confidence" in result:
         render_confidence_badge(result.get("confidence", 0.0))
     if result.get("denied_domains"):
@@ -441,12 +451,27 @@ def main() -> None:
 
     # ── Tab 2: Eval Dashboard ───────────────────────────────────────
     with tab_eval:
+        # Try to load saved results if no live results exist
+        if not st.session_state.eval_results:
+            saved = load_saved_results()
+            if saved:
+                st.session_state.eval_results = saved
+                st.caption("📂 Showing results from last saved evaluation run.")
+
         if st.session_state.eval_results:
             render_eval_dashboard(st.session_state.eval_results)
+            st.divider()
+            if st.button("🔄 Re-run Live Evaluation", use_container_width=True):
+                run_evaluation()
+                st.rerun()
         else:
             st.info(
-                "Click **Run Evaluation Suite** in the sidebar to generate results."
+                "No evaluation results found. Click **Run Evaluation Suite** "
+                "in the sidebar, or **Re-run Live Evaluation** below."
             )
+            if st.button("🔄 Run Live Evaluation", use_container_width=True):
+                run_evaluation()
+                st.rerun()
 
     # ── Tab 3: Knowledge Base browser ───────────────────────────────
     with tab_kb:
