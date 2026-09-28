@@ -33,3 +33,8 @@ Thumbs.db
 # Output (generated files, not source code)
 /output/
 eval/last_results.json
+
+# Tool-generated data (mock ticket/registry files created at runtime)
+data/mock/support_tickets.json
+data/mock/product_registry.json
+data/mock/tool_call_log.json

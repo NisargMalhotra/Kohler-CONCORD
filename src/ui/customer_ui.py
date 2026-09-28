@@ -98,6 +98,18 @@ def _render_customer_extras(result: dict) -> None:
         st.info(
             f"ℹ️ {result.get('abstention_reason', 'I may not have enough info to fully answer this.')}"
         )
+    # Tool badge
+    tool_used = result.get("tool_used")
+    if tool_used:
+        name = tool_used.get("name", "").replace("_", " ").title()
+        success = tool_used.get("success", False)
+        icon = "✅" if success else "❌"
+        details = ""
+        if tool_used.get("ticket_id"):
+            details = f" — Ticket **{tool_used['ticket_id']}**"
+        elif tool_used.get("registration_id"):
+            details = f" — Registration **{tool_used['registration_id']}**"
+        st.success(f"🤖 **Action taken:** {icon} {name}{details}")
     if result.get("needs_human"):
         action = result.get("suggested_action", "")
         st.warning(

@@ -4,8 +4,10 @@ KOHLER CONCORD — Customer Support Pipeline.
 A simplified pipeline for the customer-facing experience.
 Uses a separate, pre-built customer knowledge base.
 Two modes: 'help' (complaint resolution) and 'info' (product browsing).
+Supports tool calling for customer actions (tickets, product registration).
 """
 
+import json
 import logging
 import re
 import time
@@ -15,10 +17,14 @@ from src.config import Persona, Citation, VerifiedAnswer
 from src.llm import chat, chat_json, efficiency_stats
 from src.knowledge_base.customer_store import CustomerVectorStore
 from src.trust.injection_detector import InjectionDetector
+from src.tools import build_tool_registry, log_tool_call
 
 logger = logging.getLogger(__name__)
 
 _MAX_HISTORY_TURNS = 6
+_tool_registry = build_tool_registry()
+
+_CUSTOMER_TOOLS_PROMPT = _tool_registry.get_tools_prompt("customer")
 
 _HELP_SYSTEM_PROMPT = (
     "You are Kohler's friendly and professional customer support assistant. "
@@ -78,6 +84,80 @@ def _build_history_block(history: List[Dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def _execute_customer_tool(
+    tool_call: Dict[str, Any], query: str
+) -> Dict[str, Any]:
+    """Execute a customer tool and synthesize a response."""
+    tool_name = tool_call.get("name", "")
+    tool_params = tool_call.get("parameters", {})
+
+    tool_result = _tool_registry.execute(tool_name, tool_params)
+
+    log_tool_call(
+        tool_name=tool_name,
+        parameters=tool_params,
+        result=tool_result.result,
+        success=tool_result.success,
+        role="customer",
+        error=tool_result.error,
+    )
+
+    if not tool_result.success:
+        return {
+            "answer": (
+                f"I tried to help but encountered an issue: {tool_result.error}. "
+                "Please contact Kohler Support at 1-800-4-KOHLER."
+            ),
+            "tool_used": {
+                "name": tool_name,
+                "parameters": tool_params,
+                "success": False,
+                "error": tool_result.error,
+            },
+        }
+
+    # Synthesize natural response
+    synthesis_messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are Kohler's customer support assistant. A tool was called to "
+                "handle the customer's request. Write a warm, clear response that "
+                "confirms what was done and explains next steps. "
+                "Return JSON with keys: 'answer' (str), 'cited_clauses' (List[str])."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Customer request: {query}\n"
+                f"Tool called: {tool_name}\n"
+                f"Result: {json.dumps(tool_result.result)}\n\n"
+                "Write a helpful customer-facing response."
+            ),
+        },
+    ]
+    synthesis = chat_json(synthesis_messages)
+
+    if "error" in synthesis:
+        answer = tool_result.result.get("message", str(tool_result.result))
+    else:
+        answer = synthesis.get("answer", tool_result.result.get("message", ""))
+
+    return {
+        "answer": answer,
+        "cited_clauses": synthesis.get("cited_clauses", []) if "error" not in synthesis else [],
+        "tool_used": {
+            "name": tool_name,
+            "parameters": tool_params,
+            "success": True,
+            "result_summary": tool_result.result.get("message", ""),
+            "ticket_id": tool_result.result.get("ticket_id"),
+            "registration_id": tool_result.result.get("registration_id"),
+        },
+    }
+
+
 def run_customer_pipeline(
     query: str,
     mode: str,  # "help" or "info"
@@ -88,7 +168,8 @@ def run_customer_pipeline(
     Run the customer-specific pipeline.
     
     Returns dict with: answer, citations, confidence, needs_human,
-    suggested_action, should_abstain, abstention_reason, efficiency_stats.
+    suggested_action, should_abstain, abstention_reason, efficiency_stats,
+    tool_used.
     """
     history = conversation_history or []
     history_block = _build_history_block(history)
@@ -98,7 +179,7 @@ def run_customer_pipeline(
     is_safe, reason = detector._regex_check(query)
     if not is_safe:
         return _customer_empty_result(
-            answer=f"I'm sorry, I can't process that request. How else can I help you?",
+            answer="I'm sorry, I can't process that request. How else can I help you?",
             is_injection=True,
         )
 
@@ -119,8 +200,12 @@ def run_customer_pipeline(
         doc_texts.append(f"Clause {cid}:\n{doc.content}")
     docs_str = "\n\n".join(doc_texts)
 
-    # 4. Select system prompt based on mode
+    # 4. Select system prompt based on mode + add tools
     system_prompt = _HELP_SYSTEM_PROMPT if mode == "help" else _INFO_SYSTEM_PROMPT
+
+    # Add tool descriptions for customer tools
+    if _CUSTOMER_TOOLS_PROMPT:
+        system_prompt += _CUSTOMER_TOOLS_PROMPT
 
     # Add conversation history for multi-turn
     if history_block:
@@ -136,12 +221,47 @@ def run_customer_pipeline(
         {"role": "user", "content": f"Documents:\n{docs_str}\n\nCustomer question: {query}"},
     ]
     draft_result = chat_json(messages)
+
     if "error" in draft_result:
         logger.error(f"Customer specialist error: {draft_result['error']}")
         return _customer_empty_result(
             answer="I'm having trouble processing your request right now. "
                    "Please try again in a moment, or contact Kohler Support at 1-800-4-KOHLER."
         )
+
+    # 5b. Check for tool call
+    if "tool_call" in draft_result:
+        tool_response = _execute_customer_tool(draft_result["tool_call"], query)
+        tool_used = tool_response.get("tool_used")
+        tool_answer = tool_response.get("answer", "")
+
+        return {
+            "answer": tool_answer,
+            "citations": [],
+            "confidence": 0.95 if tool_used and tool_used.get("success") else 0.3,
+            "needs_human": False,
+            "suggested_action": None,
+            "should_abstain": False,
+            "abstention_reason": None,
+            "conflicts": [],
+            "format_output": None,
+            "denied_domains": [],
+            "domains_used": ["customer_support"],
+            "is_injection": False,
+            "tool_used": tool_used,
+            "efficiency_stats": {
+                "total_tokens_used": efficiency_stats.total_tokens_used,
+                "tokens_saved_by_cache": efficiency_stats.tokens_saved_by_cache,
+                "tokens_saved_by_routing": efficiency_stats.tokens_saved_by_routing,
+                "cache_hits": efficiency_stats.cache_hits,
+                "cache_misses": efficiency_stats.cache_misses,
+                "small_model_calls": efficiency_stats.small_model_calls,
+                "large_model_calls": efficiency_stats.large_model_calls,
+                "total_tokens_saved": efficiency_stats.total_tokens_saved,
+                "estimated_energy_saved_wh": efficiency_stats.estimated_energy_saved_wh,
+                "estimated_co2_saved_g": efficiency_stats.estimated_co2_saved_g,
+            },
+        }
 
     draft_answer = draft_result.get("answer", "")
     cited_clauses = draft_result.get("cited_clauses", [])
@@ -203,6 +323,7 @@ def run_customer_pipeline(
         "denied_domains": [],
         "domains_used": ["customer_support"],
         "is_injection": False,
+        "tool_used": None,
         "efficiency_stats": {
             "total_tokens_used": efficiency_stats.total_tokens_used,
             "tokens_saved_by_cache": efficiency_stats.tokens_saved_by_cache,
@@ -234,6 +355,7 @@ def _customer_empty_result(
         "denied_domains": [],
         "domains_used": [],
         "is_injection": is_injection,
+        "tool_used": None,
         "efficiency_stats": {
             "total_tokens_used": efficiency_stats.total_tokens_used,
             "tokens_saved_by_cache": efficiency_stats.tokens_saved_by_cache,

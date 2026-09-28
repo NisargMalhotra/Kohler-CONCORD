@@ -30,18 +30,21 @@ class DomainSpecialist:
         documents: List[Document],
         domain: str,
         history_block: str = "",
+        tools_prompt: str = "",
     ) -> Dict[str, Any]:
         """
-        Answers a query using ONLY provided documents.
+        Answers a query using ONLY provided documents, or invokes a tool.
 
         Args:
             query: User's question.
             documents: List of retrieved documents.
             domain: The domain this specialist operates in.
             history_block: Condensed recent conversation for multi-turn context.
+            tools_prompt: Optional tool descriptions to append to system prompt.
 
         Returns:
-            Dict with 'answer', 'cited_clauses', and 'key_points'.
+            Dict with 'answer', 'cited_clauses', 'key_points', and
+            optionally 'tool_call'.
         """
         if not documents:
             return {
@@ -67,6 +70,10 @@ class DomainSpecialist:
         if domain == "customer_support":
             system_prompt += _KOHLER_VALUES_ADDENDUM
 
+        # Add tool descriptions if available for this role
+        if tools_prompt:
+            system_prompt += tools_prompt
+
         # Add conversation history for multi-turn context
         if history_block:
             system_prompt += (
@@ -87,6 +94,15 @@ class DomainSpecialist:
             # Fallback: build an answer directly from the top retrieved documents
             # so the user still gets useful information even when the API is down
             return self._build_fallback_answer(query, documents, domain)
+
+        # Check if the LLM decided to call a tool instead of answering
+        if "tool_call" in result:
+            return {
+                "tool_call": result["tool_call"],
+                "answer": None,
+                "cited_clauses": [],
+                "key_points": [],
+            }
 
         return {
             "answer": result.get("answer", "No answer could be generated."),

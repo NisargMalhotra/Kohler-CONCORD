@@ -4,9 +4,11 @@ KOHLER CONCORD — Agent Pipeline Orchestrator.
 Orchestrates the full multi-agent pipeline:
   Injection Check → Query Rewriter (if follow-up) → Router →
   Permission-Aware Retrieval → Domain Specialist(s) →
-  Verifier/Critic → Conflict Detector → Formatter → Validated Output
+  Tool Execution (if applicable) → Verifier/Critic →
+  Conflict Detector → Formatter → Validated Output
 """
 
+import json
 import logging
 import re
 import time
@@ -25,12 +27,14 @@ from src.output.contracts import OutputContractParser
 from src.retrieval.permissions import PermissionFilter
 from src.retrieval.hybrid import HybridRetriever
 from src.retrieval.conflict_detector import ConflictDetector
-from src.llm import chat, efficiency_stats
+from src.llm import chat, chat_json, efficiency_stats
+from src.tools import build_tool_registry, log_tool_call
 
 logger = logging.getLogger(__name__)
 
 # Module-level singletons (re-created per import, but cheap)
 _cache = ResponseCache()
+_tool_registry = build_tool_registry()
 
 # ── Multi-turn helpers ────────────────────────────────────────────────────────
 
@@ -48,22 +52,16 @@ _REFORMULATION_RE = re.compile(
 
 def _build_history_block(conversation_history: List[Dict[str, str]]) -> str:
     """Condense the last N exchanges into a compact text block for prompts."""
-    if not conversation_history:
-        return ""
-    # Keep only user/assistant pairs, skip system messages
     relevant = [
-        m for m in conversation_history
-        if m.get("role") in ("user", "assistant")
+        m for m in conversation_history if m.get("role") in ("user", "assistant")
     ]
-    # Take last N*2 messages (N turns = N user + N assistant)
-    trimmed = relevant[-(_MAX_HISTORY_TURNS * 2):]
+    trimmed = relevant[-(_MAX_HISTORY_TURNS * 2) :]
     if not trimmed:
         return ""
     lines = []
     for m in trimmed:
         role = "User" if m["role"] == "user" else "Assistant"
         content = m.get("content", m.get("answer", ""))
-        # Truncate long responses to save tokens
         if len(content) > 400:
             content = content[:400] + "…"
         lines.append(f"{role}: {content}")
@@ -71,66 +69,146 @@ def _build_history_block(conversation_history: List[Dict[str, str]]) -> str:
 
 
 def _is_follow_up(query: str) -> bool:
-    """Heuristic: does the query reference prior context?"""
     return bool(_REFORMULATION_RE.search(query))
 
 
 def _is_answer_only_followup(query: str) -> bool:
-    """True if the user is only asking about the *previous answer* (no new retrieval needed)."""
-    answer_only = re.compile(
-        r"^(summarize|summarise|put that|format that|repeat that|say that again|shorter|in a table|as json|as xml|as email|translate that)",
-        re.IGNORECASE,
+    pattern = re.compile(
+        r"(?i)^(?:format|convert|turn|show|put|rewrite|send|draft|email|table|json|xml|excel)\b"
     )
-    return bool(answer_only.match(query.strip()))
+    return bool(pattern.match(query.strip()))
 
 
 def _rewrite_query(query: str, history_block: str) -> str:
-    """Use the LLM to rewrite a follow-up into a standalone question."""
-    if not history_block:
+    """Use the LLM to rewrite a follow-up query into a standalone question."""
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Rewrite the follow-up question as a standalone question "
+                "using the conversation history for context. "
+                "Return ONLY the rewritten question as plain text, nothing else."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"History:\n{history_block}\n\nFollow-up: {query}",
+        },
+    ]
+    rewritten = chat(messages, model=settings.LLM_MODEL_SMALL, max_tokens=256)
+    if rewritten.startswith("[Error"):
         return query
-    prompt = (
-        "Rewrite the follow-up question into a fully standalone question that can be understood "
-        "without any conversation history. Keep it concise. Do NOT answer the question.\n\n"
-        f"Conversation so far:\n{history_block}\n\n"
-        f"Follow-up question: {query}\n\n"
-        "Standalone question:"
-    )
-    rewritten = chat(
-        [{"role": "user", "content": prompt}],
-        model=settings.LLM_MODEL_SMALL,
-        temperature=0.0,
-        max_tokens=150,
-    )
-    # If the LLM returned an error, fall back to the original
-    if rewritten.startswith("[Error:") or rewritten.startswith("[LLM"):
-        return query
-    return rewritten.strip().strip('"')
+    return rewritten.strip() or query
 
 
-# ── Main pipeline ─────────────────────────────────────────────────────────────
+# ── Tool execution helper ──────────────────────────────────────────────────────
+
+
+def _execute_tool_and_synthesize(
+    tool_call: Dict[str, Any],
+    query: str,
+    persona: Persona,
+    documents: List,
+) -> Dict[str, Any]:
+    """Execute a tool call and synthesize a natural language response.
+
+    Returns a dict with 'answer', 'cited_clauses', 'key_points',
+    'tool_used' metadata.
+    """
+    tool_name = tool_call.get("name", "")
+    tool_params = tool_call.get("parameters", {})
+
+    # Execute the tool
+    tool_result = _tool_registry.execute(tool_name, tool_params)
+
+    # Log the tool call
+    log_tool_call(
+        tool_name=tool_name,
+        parameters=tool_params,
+        result=tool_result.result,
+        success=tool_result.success,
+        role=persona.value,
+        error=tool_result.error,
+    )
+
+    if not tool_result.success:
+        return {
+            "answer": (
+                f"I tried to {tool_name.replace('_', ' ')} but encountered an error: "
+                f"{tool_result.error}. Please try again or contact support."
+            ),
+            "cited_clauses": [],
+            "key_points": [],
+            "tool_used": {
+                "name": tool_name,
+                "parameters": tool_params,
+                "success": False,
+                "error": tool_result.error,
+            },
+        }
+
+    # Ask the LLM to synthesize a natural response from the tool result
+    synthesis_messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a helpful enterprise assistant. A tool was called to handle "
+                "the user's request. Write a clear, professional response that explains "
+                "what was done and any next steps. Be warm and informative. "
+                "Return JSON with keys: 'answer' (str), 'cited_clauses' (List[str]), "
+                "'key_points' (List[str])."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"User's request: {query}\n"
+                f"Tool called: {tool_name}\n"
+                f"Tool result: {json.dumps(tool_result.result)}\n\n"
+                f"Write a helpful response."
+            ),
+        },
+    ]
+    synthesis = chat_json(synthesis_messages)
+
+    if "error" in synthesis:
+        # Fallback: use the tool result's message directly
+        answer = tool_result.result.get("message", json.dumps(tool_result.result))
+    else:
+        answer = synthesis.get("answer", tool_result.result.get("message", ""))
+
+    return {
+        "answer": answer,
+        "cited_clauses": synthesis.get("cited_clauses", []) if "error" not in synthesis else [],
+        "key_points": synthesis.get("key_points", []) if "error" not in synthesis else [],
+        "tool_used": {
+            "name": tool_name,
+            "parameters": tool_params,
+            "success": True,
+            "result_summary": tool_result.result.get("message", ""),
+            "ticket_id": tool_result.result.get("ticket_id"),
+            "registration_id": tool_result.result.get("registration_id"),
+        },
+    }
+
+
+# ── Main pipeline ──────────────────────────────────────────────────────────────
 
 
 def run_agent_pipeline(
     query: str,
     persona: Persona,
     format_instruction: str = "",
-    vector_store: Any = None,
+    vector_store=None,
     conversation_history: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """
-    Orchestrate the full Kohler CONCORD agent pipeline.
-
-    Args:
-        query: User's natural-language question.
-        persona: The active user persona (controls document access).
-        format_instruction: Free-text description of desired output format.
-        vector_store: Initialised VectorStore instance.
-        conversation_history: Recent chat messages for multi-turn context.
+    Full multi-agent pipeline with trust layer, now with tool calling.
 
     Returns:
         Dict with keys: answer, citations, confidence, conflicts,
         format_output, denied_domains, efficiency_stats, is_injection,
-        should_abstain, abstention_reason.
+        should_abstain, abstention_reason, tool_used.
     """
     history = conversation_history or []
     start_time = time.time()
@@ -206,11 +284,15 @@ def run_agent_pipeline(
         )
         return result
 
-    # ── 4. Generate draft answers per domain ──────────────────────────
+    # ── 4. Generate draft answers per domain (with tool support) ──────
     specialist = DomainSpecialist()
     drafts: List[str] = []
     all_cited: List[str] = []
     domains_used: List[str] = []
+    tool_used: Optional[Dict[str, Any]] = None
+
+    # Get tools prompt for this role
+    tools_prompt = _tool_registry.get_tools_prompt(persona.value)
 
     for domain in domains:
         domain_docs = [
@@ -220,8 +302,25 @@ def run_agent_pipeline(
             domain_docs = documents  # fallback: use all retrieved docs
 
         res = specialist.answer(
-            query, domain_docs, domain, history_block=history_block
+            query, domain_docs, domain,
+            history_block=history_block,
+            tools_prompt=tools_prompt,
         )
+
+        # Check if the specialist wants to call a tool
+        if res.get("tool_call") and tool_used is None:
+            tool_result = _execute_tool_and_synthesize(
+                res["tool_call"], query, persona, documents
+            )
+            tool_used = tool_result.get("tool_used")
+            answer_text = tool_result.get("answer", "")
+            if answer_text:
+                drafts.append(answer_text)
+                all_cited.extend(tool_result.get("cited_clauses", []))
+                domains_used.append(domain)
+            # Don't process more domains after a tool call
+            break
+
         answer_text = res.get("answer", "")
         if answer_text:
             drafts.append(answer_text)
@@ -320,6 +419,7 @@ def run_agent_pipeline(
         "should_abstain": verified.should_abstain,
         "abstention_reason": verified.abstention_reason,
         "domains_used": verified.domains_used,
+        "tool_used": tool_used,
         "efficiency_stats": {
             "total_tokens_used": efficiency_stats.total_tokens_used,
             "tokens_saved_by_cache": efficiency_stats.tokens_saved_by_cache,
@@ -356,6 +456,7 @@ def _empty_result(
         "should_abstain": False,
         "abstention_reason": None,
         "domains_used": [],
+        "tool_used": None,
         "efficiency_stats": {
             "total_tokens_used": efficiency_stats.total_tokens_used,
             "tokens_saved_by_cache": efficiency_stats.tokens_saved_by_cache,

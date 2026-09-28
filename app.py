@@ -4,7 +4,7 @@ KOHLER CONCORD — Streamlit Application Entry Point.
 Main UI for the Kohler Unified Enterprise AI Agent with Trust Layer.
 Provides: login gate, chat interface with streaming, citations panel,
 conflict alerts, confidence badges, format selector, download buttons,
-feedback buttons, eval dashboard, and sustainability counter.
+feedback buttons, eval dashboard, admin KB upload, and sustainability counter.
 """
 
 import os
@@ -30,7 +30,9 @@ from src.ui.components import (
 from src.ui.dashboard import render_eval_dashboard
 from src.ui.feedback import log_feedback
 from src.ui.customer_ui import render_customer_experience
+from src.ui.admin_upload import render_admin_upload, is_admin
 from src.knowledge_base.customer_store import CustomerVectorStore
+from src.tools.tool_log import get_tool_call_stats
 from eval.runner import EvalRunner, load_saved_results
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -206,12 +208,36 @@ def _stream_text(text: str):
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
+def _render_tool_badge(tool_used: dict) -> None:
+    """Show a visual badge when an agentic tool was used."""
+    if not tool_used:
+        return
+    name = tool_used.get("name", "").replace("_", " ").title()
+    success = tool_used.get("success", False)
+    icon = "✅" if success else "❌"
+
+    # Build the detail string
+    details = ""
+    if tool_used.get("ticket_id"):
+        details = f" — Ticket **{tool_used['ticket_id']}**"
+    elif tool_used.get("registration_id"):
+        details = f" — Registration **{tool_used['registration_id']}**"
+    elif "result_summary" in tool_used and tool_used["result_summary"]:
+        details = f" — {tool_used['result_summary'][:80]}"
+
+    st.success(f"🤖 **Action taken:** {icon} {name}{details}")
+
+
 def _render_assistant_extras(result: dict) -> None:
-    """Renders badges, citations, conflicts, and formatted outputs."""
+    """Renders badges, citations, conflicts, tool badges, and formatted outputs."""
     if result.get("is_injection"):
         st.error("🛡️ **Security Alert:** Potential prompt injection detected and blocked.")
     if result.get("should_abstain"):
         st.info(f"ℹ️ **Insufficient Evidence:** {result.get('abstention_reason', 'Not enough supporting documents.')}")
+
+    # Tool badge
+    if result.get("tool_used"):
+        _render_tool_badge(result["tool_used"])
 
     # Verification level badge
     vlevel = result.get("verification_level", "full")
@@ -363,13 +389,26 @@ def main() -> None:
         st.markdown("### 🌱 Sustainability")
         render_efficiency_stats(efficiency_stats)
 
+        # Tool stats
+        tool_stats = get_tool_call_stats()
+        if tool_stats.get("total_calls", 0) > 0:
+            st.divider()
+            st.markdown("### 🤖 Agent Actions")
+            st.metric("Total Tool Calls", tool_stats["total_calls"])
+            for tname, tcount in tool_stats.get("by_tool", {}).items():
+                st.caption(f"  {tname.replace('_', ' ').title()}: {tcount}")
+
     # ── Main area tabs ──────────────────────────────────────────────────
-    tab_chat, tab_eval, tab_kb = st.tabs(
-        ["💬 Chat", "📊 Eval Dashboard", "🔍 Knowledge Base"]
-    )
+    # Build tab list — add Admin Upload tab only for admin roles
+    tab_labels = ["💬 Chat", "📊 Eval Dashboard", "🔍 Knowledge Base"]
+    show_admin = is_admin(selected_persona)
+    if show_admin:
+        tab_labels.append("📤 Admin Upload")
+
+    tabs = st.tabs(tab_labels)
 
     # ── Tab 1: Chat ───────────────────────────────────────────────────
-    with tab_chat:
+    with tabs[0]:
         # Render history
         for idx, msg in enumerate(st.session_state.messages):
             with st.chat_message(msg["role"]):
@@ -450,7 +489,7 @@ def main() -> None:
                     _render_feedback(new_idx, msg_data)
 
     # ── Tab 2: Eval Dashboard ───────────────────────────────────────
-    with tab_eval:
+    with tabs[1]:
         # Try to load saved results if no live results exist
         if not st.session_state.eval_results:
             saved = load_saved_results()
@@ -474,7 +513,7 @@ def main() -> None:
                 st.rerun()
 
     # ── Tab 3: Knowledge Base browser ───────────────────────────────
-    with tab_kb:
+    with tabs[2]:
         if st.session_state.get("kb_initialized"):
             store = st.session_state.vector_store
             stats = store.get_collection_stats()
@@ -497,6 +536,16 @@ def main() -> None:
                         st.markdown(doc.content)
         else:
             st.info("Initialise the Knowledge Base to browse documents.")
+
+    # ── Tab 4: Admin Upload (only for admin roles) ──────────────────
+    if show_admin:
+        with tabs[3]:
+            if st.session_state.get("kb_initialized"):
+                render_admin_upload(st.session_state.vector_store)
+            else:
+                st.warning(
+                    "⚠️ Please initialise the Knowledge Base first before uploading new data."
+                )
 
 
 if __name__ == "__main__":

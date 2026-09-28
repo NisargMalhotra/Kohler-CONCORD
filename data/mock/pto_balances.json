@@ -1,0 +1,12 @@
+{
+    "employees": [
+        {"id": "EMP001", "name": "Sarah Chen", "department": "Engineering", "pto_total": 20, "pto_used": 8, "pto_remaining": 12},
+        {"id": "EMP002", "name": "Marcus Johnson", "department": "Marketing", "pto_total": 20, "pto_used": 15, "pto_remaining": 5},
+        {"id": "EMP003", "name": "Priya Patel", "department": "Human Resources", "pto_total": 22, "pto_used": 6, "pto_remaining": 16},
+        {"id": "EMP004", "name": "James Wilson", "department": "Finance", "pto_total": 20, "pto_used": 20, "pto_remaining": 0},
+        {"id": "EMP005", "name": "Aisha Rahman", "department": "Legal", "pto_total": 25, "pto_used": 10, "pto_remaining": 15},
+        {"id": "EMP006", "name": "David Kim", "department": "Customer Support", "pto_total": 18, "pto_used": 3, "pto_remaining": 15},
+        {"id": "EMP007", "name": "Emily Nakamura", "department": "Engineering", "pto_total": 20, "pto_used": 12, "pto_remaining": 8},
+        {"id": "EMP008", "name": "Robert Garcia", "department": "Operations", "pto_total": 20, "pto_used": 18, "pto_remaining": 2}
+    ]
+}
